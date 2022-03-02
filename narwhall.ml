@@ -15,19 +15,21 @@ end
     
     worse, it thinks it's the same every time!!!
     *)
-module Oracle (SomeModule: sig type t end) = struct
+module Oracle (SomeModule : Hashtbl.HashedType) = struct
   let counter = ref 0
 
-  let memory: (SomeModule.t, int) Hashtbl.t = Hashtbl.create 5
+  module Hashtbl = Hashtbl.Make (SomeModule)
 
-  let to_bytes (t:SomeModule.t) : string =
+  let memory : int Hashtbl.t = Hashtbl.create 5
+
+  let to_bytes (t : SomeModule.t) : string =
+    Format.printf "using %d\n" (SomeModule.hash t);
     match Hashtbl.find_opt memory t with
     | Some d -> string_of_int d
-    | None -> (
-      counter := !counter + 1; 
-      Hashtbl.add memory t !counter;
-      string_of_int !counter
-    )
+    | None ->
+        counter := !counter + 1;
+        Hashtbl.add memory t !counter;
+        string_of_int !counter
 end
 
 module Digest = struct
@@ -35,21 +37,20 @@ module Digest = struct
 
   let counter = ref 0
 
-  let fake: (string, int) Hashtbl.t = Hashtbl.create 5
+  let fake : (string, int) Hashtbl.t = Hashtbl.create 5
 
   let hash data =
     match Hashtbl.find_opt fake data with
     | Some d -> d
-    | None -> (
-      counter := !counter + 1; 
-      Hashtbl.add fake data !counter;
-      !counter
-    )
+    | None ->
+        counter := !counter + 1;
+        Hashtbl.add fake data !counter;
+        !counter
 
-  let%test_unit "counter" = 
-    assert ((hash "hey") = 1);
-    assert ((hash "hey") = 1);
-    assert ((hash "heyo") = 2)
+  let%test_unit "counter" =
+    assert (hash "hey" = 1);
+    assert (hash "hey" = 1);
+    assert (hash "heyo" = 2)
 end
 
 module Ed25519 = struct
@@ -75,8 +76,7 @@ module Ed25519 = struct
 
     let generate _ : t = Random.int 10000
 
-    let to_pubkey t : Pubkey.t =
-      t + 1
+    let to_pubkey t : Pubkey.t = t + 1
 
     let sign ~(privkey : t) (msg : Digest.t) : Signature.t =
       let _ = privkey in
@@ -92,7 +92,9 @@ module rec Block : sig
     transactions : Transaction.t list;
     certificates : Certificate.t list;
   }
+
   val to_bytes : t -> string
+
   val digest : t -> Digest.t
 end = struct
   type t = {
@@ -102,26 +104,27 @@ end = struct
     certificates : Certificate.t list;
   }
 
-  let to_bytes block = 
-    let module B = Oracle (struct type nonrec t = t end) in
+  let to_bytes block =
+    let module B = Oracle (struct
+      type nonrec t = t
+
+      let hash = Hashtbl.hash
+
+      let equal = Stdlib.( = )
+    end) in
     B.to_bytes block
 
   let digest (block : Block.t) : Digest.t =
     let _ = block in
     failwith "digest"
-  
+
   let%test_unit "to_bytes" =
     let privkey = Ed25519.Privkey.generate () in
     let source = Ed25519.Privkey.to_pubkey privkey in
     let round = 1 in
-    let transactions = [Transaction.for_test ()] in
+    let transactions = [ Transaction.for_test () ] in
     let certificates = [] in
-    let block = {
-      source;
-      round;
-      transactions;
-      certificates
-    } in 
+    let block = { source; round; transactions; certificates } in
     let b1 = to_bytes block in
     let b2 = to_bytes block in
     assert (b1 = "1");
