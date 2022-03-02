@@ -1,0 +1,10 @@
+{
+    "dependencies": {
+        "ocaml": "~4.13.1",
+        "@opam/dune": "*",
+        "@opam/ppx_jane": "*"
+    },
+    "devDependencies": {
+        "@opam/merlin": "*"
+    }
+}
