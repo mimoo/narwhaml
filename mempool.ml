@@ -1,24 +1,24 @@
 module RoundToAuthors = Set.Make (Bls.PublicKey)
 
-module type Network = sig
-  val broadcast : bytes -> unit
-end
-
-module Mempool (Network : Network) = struct
+module Mempool (Network : Network.T) = struct
   type t = {
+    signing_key : Bls.SigningKey.t;
     round : int;
     round_to_blocks : int -> Types.Block.t list;
     pending_transactions : Types.Transaction.t list;
+    validators : Bls.PublicKey.t list;
     two_f_plus_one : int;
     round_to_authors : int -> RoundToAuthors.t;
     round_to_certificates : int -> Types.Certificate.t list;
   }
 
-  let new_mempool _ : t =
+  let new_mempool ~validators : t =
     {
+      signing_key = Bls.SigningKey.generate ();
       round = 0;
       round_to_blocks = (fun _ -> []);
       pending_transactions = [];
+      validators;
       two_f_plus_one = 0;
       round_to_authors = (fun _ -> RoundToAuthors.empty);
       round_to_certificates = (fun _ -> []);
@@ -27,10 +27,10 @@ module Mempool (Network : Network) = struct
   let get_current_certificates (state : t) round =
     state.round_to_certificates round
 
-  let write ~digest ~block =
+  let write digest block =
     let _ = digest in
     let _ = block in
-    failwith "unimplemented"
+    ()
 
   let valid ~digest ~certificate : bool =
     let _ = digest in
@@ -44,7 +44,7 @@ module Mempool (Network : Network) = struct
   let get_pending_transactions num =
     List.init num (fun _ -> Types.Transaction.for_test ())
 
-  let validate_block (state : t) ~(sblock : Types.SignedBlock.t) : bool =
+  let validate_block (state : t) (sblock : Types.SignedBlock.t) : bool =
     let pubkey = sblock.block.source in
     let signature = sblock.signature in
     let digest = Types.SignedBlock.digest sblock in
@@ -61,8 +61,7 @@ module Mempool (Network : Network) = struct
     then false
     else true
 
-  (** The consensus function *)
-  let run_consensus ~privkey (state : t) =
+  let start_round ~privkey (state : t) =
     (* create a block *)
     let transactions = get_pending_transactions 10 in
     let round = state.round in
@@ -73,8 +72,31 @@ module Mempool (Network : Network) = struct
     let serialized_sblock = Marshal.(to_bytes sblock [ No_sharing ]) in
 
     (* send it to everyone *)
-    Network.broadcast serialized_sblock;
+    Network.broadcast ~label:"block" serialized_sblock;
 
     (* wait to receive a certificate *)
-    failwith "unimplemented"
+    ()
+
+  let receive_block t ~from bytes =
+    (* deserialize block *)
+    let sblock : Types.SignedBlock.t = Marshal.from_bytes bytes 0 in
+
+    (* validate block *)
+    if not (validate_block t sblock) then failwith "invalid block"
+    else
+      (* store it *)
+      let digest = Types.SignedBlock.digest sblock in
+      write digest sblock;
+
+      (* sign it *)
+      let signature = Bls.SigningKey.sign t.signing_key digest in
+      let signature = Bls.Signature.to_bytes signature in
+
+      (* send signature back *)
+      Network.send ~public_key:from ~label:"signature" signature
+
+  let receive_data ~label bytes =
+    match label with
+    | "block" -> receive_block bytes
+    | _ -> failwith "unimplemented"
 end
