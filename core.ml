@@ -1,6 +1,7 @@
 module rec Mempool : sig
   type t = {
     signing_key : Bls.SigningKey.t;
+    public_key : Bls.PublicKey.t;
     round : int;
     round_to_blocks : int -> Types.Block.t list;
     pending_transactions : Types.Transaction.t list;
@@ -10,7 +11,19 @@ module rec Mempool : sig
     round_to_certificates : int -> Types.Certificate.t list;
   }
 
-  val new_mempool : validators:Bls.PublicKey.t list -> t
+  module Network : sig
+    val broadcast : from:Bls.PublicKey.t -> label:string -> bytes -> unit
+
+    val send :
+      from:Bls.PublicKey.t ->
+      public_key:Bls.PublicKey.t ->
+      label:string ->
+      bytes ->
+      unit
+  end
+
+  val new_mempool :
+    signing_key:Bls.SigningKey.t -> validators:Bls.PublicKey.t list -> t
 
   val get_current_certificates : t -> int -> Types.Certificate.t list
 
@@ -28,10 +41,11 @@ module rec Mempool : sig
 
   val receive_block : t -> from:Bls.PublicKey.t -> bytes -> unit
 
-  val receive_data : t -> label:string -> Bls.PublicKey.t -> bytes -> unit
+  val receive_data : t -> from:Bls.PublicKey.t -> label:string -> bytes -> unit
 end = struct
   type t = {
     signing_key : Bls.SigningKey.t;
+    public_key : Bls.PublicKey.t;
     round : int;
     round_to_blocks : int -> Types.Block.t list;
     pending_transactions : Types.Transaction.t list;
@@ -41,9 +55,23 @@ end = struct
     round_to_certificates : int -> Types.Certificate.t list;
   }
 
-  let new_mempool ~validators : t =
+  module Network = struct
+    let broadcast ~from ~label _bytes =
+      let _ = from in
+      let _ = label in
+      ()
+
+    let send ~from ~public_key ~label _bytes =
+      let _ = from in
+      let _ = public_key in
+      let _ = label in
+      ()
+  end
+
+  let new_mempool ~signing_key ~validators : t =
     {
-      signing_key = Bls.SigningKey.generate ();
+      signing_key;
+      public_key = Bls.SigningKey.to_public signing_key;
       round = 0;
       round_to_blocks = (fun _ -> []);
       pending_transactions = [];
@@ -91,18 +119,18 @@ end = struct
     then false
     else true
 
-  let start_round ~privkey (state : t) =
+  let start_round ~privkey t =
     (* create a block *)
     let transactions = get_pending_transactions 10 in
-    let round = state.round in
-    let certificates = get_current_certificates state round in
+    let round = t.round in
+    let certificates = get_current_certificates t round in
     let sblock =
       Types.SignedBlock.create ~privkey ~round ~certificates transactions
     in
     let serialized_sblock = Marshal.(to_bytes sblock [ No_sharing ]) in
 
     (* send it to everyone *)
-    Network.broadcast ~label:"block" serialized_sblock;
+    Network.broadcast ~from:t.public_key ~label:"block" serialized_sblock;
 
     (* wait to receive a certificate *)
     ()
@@ -123,40 +151,17 @@ end = struct
       let signature = Bls.Signature.to_bytes signature in
 
       (* send signature back *)
-      Network.send ~public_key:from ~label:"signature" signature
+      Network.send ~from ~public_key:from ~label:"signature" signature
 
-  let receive_data t ~(label : string) (from : Bls.PublicKey.t) (data : bytes) =
+  let receive_data t ~(from : Bls.PublicKey.t) ~(label : string) (data : bytes)
+      =
     match label with
     | "block" -> receive_block t ~from data
     | _ -> failwith "unimplemented"
 end
 
 and Validator : sig
-  type t = {
-    mempool : Mempool.t;
-    recv : label:string -> bytes -> unit;
-    send : label:string -> Bls.PublicKey.t -> bytes -> unit;
-    broadcast : label:string -> bytes -> unit;
-  }
+  type t = { mempool : Mempool.t }
 end = struct
-  type t = {
-    mempool : Mempool.t;
-    recv : label:string -> bytes -> unit;
-    send : label:string -> Bls.PublicKey.t -> bytes -> unit;
-    broadcast : label:string -> bytes -> unit;
-  }
-end
-
-and Network : sig
-  type t = { privkey : Bls.SigningKey.t; mempool : Mempool.t }
-
-  val broadcast : label:string -> bytes -> unit
-
-  val send : public_key:Bls.PublicKey.t -> label:string -> bytes -> unit
-end = struct
-  type t = { privkey : Bls.SigningKey.t; mempool : Mempool.t }
-
-  let broadcast = failwith "unimplemented"
-
-  let send = failwith "unimplemented"
+  type t = { mempool : Mempool.t }
 end
