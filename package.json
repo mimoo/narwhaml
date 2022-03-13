@@ -10,7 +10,8 @@
         "@opam/hexstring": "*",
         "esy-rustup": "*",
         "@opam/randoml": "*",
-        "@opam/ppx_sexp_conv": "*"
+        "@opam/ppx_sexp_conv": "*",
+        "@opam/digestif": "*"
     },
     "devDependencies": {
         "@opam/merlin": "*"

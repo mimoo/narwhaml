@@ -1,7 +1,10 @@
-
 module RoundToAuthors = Set.Make (Bls.PublicKey)
 
-module Mempool = struct
+module type Network = sig
+  val broadcast : bytes -> unit
+end
+
+module Mempool (Network : Network) = struct
   type t = {
     round : int;
     round_to_blocks : int -> Types.Block.t list;
@@ -44,7 +47,7 @@ module Mempool = struct
   let validate_block (state : t) ~(sblock : Types.SignedBlock.t) : bool =
     let pubkey = sblock.block.source in
     let signature = sblock.signature in
-    let digest = Types.Digest.to_bytes @@ Types.SignedBlock.digest sblock in
+    let digest = Types.SignedBlock.digest sblock in
     let block = sblock.block in
     (* valid signature *)
     if not (Bls.PublicKey.verify pubkey digest signature) then false
@@ -64,7 +67,14 @@ module Mempool = struct
     let transactions = get_pending_transactions 10 in
     let round = state.round in
     let certificates = get_current_certificates state round in
-    let block = Types.SignedBlock.create ~privkey ~round ~certificates transactions in
-    let _ = block in
+    let sblock =
+      Types.SignedBlock.create ~privkey ~round ~certificates transactions
+    in
+    let serialized_sblock = Marshal.(to_bytes sblock [ No_sharing ]) in
+
+    (* send it to everyone *)
+    Network.broadcast serialized_sblock;
+
+    (* wait to receive a certificate *)
     failwith "unimplemented"
 end

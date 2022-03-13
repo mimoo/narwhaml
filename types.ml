@@ -22,32 +22,9 @@ module ReliableBroadcast = struct
 end
 
 module Transaction = struct
-  type t = int 
-
-  let for_test _ : t = Random.int 10000
-end
-
-module Digest = struct
   type t = int
 
-  let counter = ref 0
-
-  let fake : (string, int) Hashtbl.t = Hashtbl.create 5
-
-  let hash data =
-    match Hashtbl.find_opt fake data with
-    | Some d -> d
-    | None ->
-        counter := !counter + 1;
-        Hashtbl.add fake data !counter;
-        !counter
-
-  let to_bytes (t : t) : bytes = Bytes.of_string @@ string_of_int t
-
-  let%test_unit "counter" =
-    assert (hash "hey" = 1);
-    assert (hash "hey" = 1);
-    assert (hash "heyo" = 2)
+  let for_test _ : t = Random.int 10000
 end
 
 module rec Block : sig
@@ -56,31 +33,25 @@ module rec Block : sig
     round : int;
     transactions : Transaction.t list;
     certificates : Certificate.t list;
-  } 
+  }
 
-  val to_bytes : t -> string
+  val to_bytes : t -> bytes
 
-  val digest : t -> Digest.t
+  val digest : t -> bytes
 end = struct
   type t = {
     source : Bls.PublicKey.t;
     round : int;
     transactions : Transaction.t list;
     certificates : Certificate.t list;
-  } 
+  }
 
-  module Oracle = Oracle (struct
-    type nonrec t = t
-    let hash = Hashtbl.hash
-    let equal = Stdlib.( = )
-  end)
+  let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
 
-  let to_bytes  =
-    Oracle.to_bytes 
-
-  let digest (block : Block.t) : Digest.t =
-    let _ = block in
-    failwith "digest"
+  let digest (t : Block.t) =
+    let bytes = to_bytes t in
+    let digest_str = Digestif.SHA3_256.(to_raw_string @@ digest_bytes bytes) in
+    Bytes.of_string digest_str
 
   let%test_unit "to_bytes" =
     let privkey = Bls.SigningKey.generate () in
@@ -91,15 +62,14 @@ end = struct
     let block = { source; round; transactions; certificates } in
     let b1 = to_bytes block in
     let b2 = to_bytes block in
-    assert (b1 = "1");
     assert (b1 = b2);
     let other_block = { block with round = 2 } in
     let b3 = to_bytes other_block in
-    assert (b3 = "2")
+    assert (b3 <> b1)
 end
 
 and SignedBlock : sig
-  type t = { block : Block.t; signature : Bls.Signature.t }  
+  type t = { block : Block.t; signature : Bls.Signature.t }
 
   val create :
     privkey:Bls.SigningKey.t ->
@@ -108,28 +78,32 @@ and SignedBlock : sig
     Transaction.t list ->
     t
 
-  val digest : t -> Digest.t
-end = struct
-  type t = { block : Block.t; signature : Bls.Signature.t } 
+  val to_bytes : t -> bytes
 
-  let digest { block; _ } = Block.digest block
+  val digest : t -> bytes
+end = struct
+  type t = { block : Block.t; signature : Bls.Signature.t }
 
   let create ~privkey ~round ~certificates transactions =
     let source = Bls.SigningKey.to_public privkey in
     let block = Block.{ source; round; transactions; certificates } in
-    let digest = Digest.to_bytes @@ Block.digest block in
+    let digest = Block.digest block in
     let signature = Bls.SigningKey.sign privkey digest in
     { block; signature }
+
+  let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
+
+  let digest { block; _ } = Block.digest block
 end
 
 and Certificate : sig
-  type t = { block : Block.t; signatures : Bls.Signature.t list } 
+  type t = { block : Block.t; signatures : Bls.Signature.t list }
 
   val create : Block.t -> t
 
   val add_signature : t -> Bls.Signature.t -> t
 end = struct
-  type t = { block : Block.t; signatures : Bls.Signature.t list } 
+  type t = { block : Block.t; signatures : Bls.Signature.t list }
 
   let create block : t = { block; signatures = [] }
 

@@ -6,4 +6,5 @@
   (libraries
    randoml
    bls12-381
+   digestif
    hexstring))
