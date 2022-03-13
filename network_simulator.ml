@@ -4,11 +4,11 @@ module PublicKeyToValidator = Map.Make (struct
   let compare = Bls.PublicKey.compare
 end)
 
-module type Validators = sig
-  module Validator : sig
-    type t = { recv : label:string -> bytes -> unit }
-  end
+module Validator = struct
+  type t = { recv : label:string -> bytes -> unit }
+end
 
+module type Validators = sig
   val t : Validator.t PublicKeyToValidator.t
 end
 
@@ -25,11 +25,14 @@ module Network (Validators : Validators) = struct
 
   let send ~(label : string) ~(public_key : Bls.PublicKey.t) bytes =
     Unix.sleep network_latency_in_secs;
-    ()
+    let validator : Validator.t =
+      PublicKeyToValidator.find public_key Validators.t
+    in
+    validator.recv ~label bytes
   (* Validators.t  *)
 
   let broadcast ~(label : string) bytes =
     Unix.sleep network_latency_in_secs;
-    let f public_key thing = thing.recv ~label bytes in
+    let f _public_key (thing : Validator.t) = thing.recv ~label bytes in
     PublicKeyToValidator.iter f Validators.t
 end
