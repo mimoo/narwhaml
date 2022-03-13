@@ -1,6 +1,4 @@
-module RoundToAuthors = Set.Make (Bls.PublicKey)
-
-module Mempool (Network : Network.T) = struct
+module rec Mempool : sig
   type t = {
     signing_key : Bls.SigningKey.t;
     round : int;
@@ -8,7 +6,38 @@ module Mempool (Network : Network.T) = struct
     pending_transactions : Types.Transaction.t list;
     validators : Bls.PublicKey.t list;
     two_f_plus_one : int;
-    round_to_authors : int -> RoundToAuthors.t;
+    round_to_authors : int -> Types.RoundToAuthors.t;
+    round_to_certificates : int -> Types.Certificate.t list;
+  }
+
+  val new_mempool : validators:Bls.PublicKey.t list -> t
+
+  val get_current_certificates : t -> int -> Types.Certificate.t list
+
+  val write : int -> int -> unit
+
+  val valid : digest:bytes -> certificate:Types.Certificate.t -> bool
+
+  val read : digest:bytes -> Types.Block.t
+
+  val get_pending_transactions : int -> Types.Transaction.t list
+
+  val validate_block : t -> Types.SignedBlock.t -> bool
+
+  val start_round : privkey:Bls.SigningKey.t -> t -> unit
+
+  val receive_block : t -> from:Bls.PublicKey.t -> bytes -> unit
+
+  val receive_data : t -> label:string -> Bls.PublicKey.t -> bytes -> unit
+end = struct
+  type t = {
+    signing_key : Bls.SigningKey.t;
+    round : int;
+    round_to_blocks : int -> Types.Block.t list;
+    pending_transactions : Types.Transaction.t list;
+    validators : Bls.PublicKey.t list;
+    two_f_plus_one : int;
+    round_to_authors : int -> Types.RoundToAuthors.t;
     round_to_certificates : int -> Types.Certificate.t list;
   }
 
@@ -20,7 +49,7 @@ module Mempool (Network : Network.T) = struct
       pending_transactions = [];
       validators;
       two_f_plus_one = 0;
-      round_to_authors = (fun _ -> RoundToAuthors.empty);
+      round_to_authors = (fun _ -> Types.RoundToAuthors.empty);
       round_to_certificates = (fun _ -> []);
     }
 
@@ -57,7 +86,8 @@ module Mempool (Network : Network.T) = struct
     else if
       block.round <> 0 && List.length block.certificates < state.two_f_plus_one
     then false (* author has already proposed in this round *)
-    else if RoundToAuthors.mem block.source (state.round_to_authors block.round)
+    else if
+      Types.RoundToAuthors.mem block.source (state.round_to_authors block.round)
     then false
     else true
 
@@ -95,8 +125,38 @@ module Mempool (Network : Network.T) = struct
       (* send signature back *)
       Network.send ~public_key:from ~label:"signature" signature
 
-  let receive_data ~label bytes =
+  let receive_data t ~(label : string) (from : Bls.PublicKey.t) (data : bytes) =
     match label with
-    | "block" -> receive_block bytes
+    | "block" -> receive_block t ~from data
     | _ -> failwith "unimplemented"
+end
+
+and Validator : sig
+  type t = {
+    mempool : Mempool.t;
+    recv : label:string -> bytes -> unit;
+    send : label:string -> Bls.PublicKey.t -> bytes -> unit;
+    broadcast : label:string -> bytes -> unit;
+  }
+end = struct
+  type t = {
+    mempool : Mempool.t;
+    recv : label:string -> bytes -> unit;
+    send : label:string -> Bls.PublicKey.t -> bytes -> unit;
+    broadcast : label:string -> bytes -> unit;
+  }
+end
+
+and Network : sig
+  type t = { privkey : Bls.SigningKey.t; mempool : Mempool.t }
+
+  val broadcast : label:string -> bytes -> unit
+
+  val send : public_key:Bls.PublicKey.t -> label:string -> bytes -> unit
+end = struct
+  type t = { privkey : Bls.SigningKey.t; mempool : Mempool.t }
+
+  let broadcast = failwith "unimplemented"
+
+  let send = failwith "unimplemented"
 end

@@ -111,4 +111,10 @@ end = struct
     { t with signatures = signature :: t.signatures }
 end
 
-let%test_unit "thing" = print_endline "hello world"
+module PublicKeyToValidator = Map.Make (struct
+  type t = Bls.PublicKey.t
+
+  let compare = Bls.PublicKey.compare
+end)
+
+module RoundToAuthors = Set.Make (Bls.PublicKey)
