@@ -15,7 +15,7 @@ let rec run_network (pubkey_to_channel, recv_channels) =
 
 let new_simulation num_validators =
   Format.printf "starting simulation with %d validators\n" num_validators;
-  
+
   (* generate signing_keys *)
   let signing_keys = ref [] in
   for _ = 0 to num_validators do
@@ -33,7 +33,7 @@ let new_simulation num_validators =
     let send : Types.message Event.channel = Event.new_channel () in
     let recv : Types.message Event.channel = Event.new_channel () in
     send_channels := send :: !send_channels;
-    recv_channels := recv :: !recv_channels;
+    recv_channels := recv :: !recv_channels
   done;
 
   (* map public keys to channels *)
@@ -47,7 +47,7 @@ let new_simulation num_validators =
   (* create a new thread for every validator, returns the handle *)
   let create_validator_thread signing_key (send, recv) =
     (* a send (resp. recv) channel becomes a recv (resp. send) channel for a validator *)
-    let (send, recv) = (recv, send) in
+    let send, recv = (recv, send) in
     let validator =
       Core.Validator.new_validator signing_key validators_pubkeys ~send ~recv
     in

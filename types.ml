@@ -32,10 +32,14 @@ type block = {
   round : int;
   transactions : Transaction.t list;
   certificates : certificate list;
-} 
-and signed_block = { block : block; signature : Bls.Signature.t }
-and certificate = { signed_block : signed_block; signatures : Bls.Signature.t list }
+}
 
+and signed_block = { block : block; signature : Bls.Signature.t }
+
+and certificate = {
+  signed_block : signed_block;
+  signatures : Bls.Signature.t list;
+}
 
 module Block = struct
   type t = block
@@ -99,8 +103,8 @@ module RoundToAuthors = Set.Make (Bls.PublicKey)
 type msg_type = Block | SignedBlock | Certificate
 
 type message = {
-  from : Bls.PublicKey.t; (** author of this message *)
-  destination : Bls.PublicKey.t option; (** None indicates a broadcast *)
-  label : msg_type; (** type of message *)
-  data : bytes; (** serialized message *)
+  from : Bls.PublicKey.t;  (** author of this message *)
+  destination : Bls.PublicKey.t option;  (** None indicates a broadcast *)
+  label : msg_type;  (** type of message *)
+  data : bytes;  (** serialized message *)
 }

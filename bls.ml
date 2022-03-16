@@ -2,7 +2,7 @@
 
 module Signature = struct
   type t = Bls12_381.Signature.MinSig.signature
-  
+
   let to_bytes : t -> bytes = Bls12_381.Signature.MinSig.signature_to_bytes
 
   let to_hex signature : string = Hexstring.encode @@ to_bytes signature
@@ -10,12 +10,13 @@ end
 
 module PublicKey = struct
   type t = Bls12_381.Signature.MinSig.pk
-  
+
   let to_bytes : t -> bytes = Bls12_381.Signature.MinSig.pk_to_bytes
 
   let to_hex pk : string = Hexstring.encode @@ to_bytes pk
 
-  let verify pk msg signature: bool = Bls12_381.Signature.MinSig.Basic.verify pk msg signature
+  let verify pk msg signature : bool =
+    Bls12_381.Signature.MinSig.Basic.verify pk msg signature
 
   let compare = Stdlib.compare
 end
@@ -23,20 +24,19 @@ end
 module SigningKey = struct
   type t = Bls12_381.Signature.sk
 
-  let generate _ : t = 
+  let generate _ : t =
     let ikm = Bytes.create 32 in
     Randoml.rand_fill ikm;
     Bls12_381.Signature.generate_sk ikm
-  
+
   let to_bytes : t -> bytes = Bls12_381.Signature.sk_to_bytes
 
   let to_hex sk : string = Hexstring.encode @@ to_bytes sk
 
   let to_public : t -> PublicKey.t = Bls12_381.Signature.MinSig.derive_pk
 
-  let sign sk (msg: bytes) : Signature.t = 
+  let sign sk (msg : bytes) : Signature.t =
     Bls12_381.Signature.MinSig.Basic.sign sk msg
-
 end
 
 let%test "sign & verify" =
