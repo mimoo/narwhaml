@@ -1,58 +1,17 @@
-module rec Mempool : sig
+module Mempool = struct
   type t = {
+    mutex : Mutex.t;
     signing_key : Bls.SigningKey.t;
     public_key : Bls.PublicKey.t;
+    send : Types.message Event.channel;
+    recv : Types.message Event.channel;
     round : int;
     round_to_blocks : int -> Types.Block.t list;
-    pending_transactions : Types.Transaction.t list;
-    validators : Bls.PublicKey.t list;
+    mutable pending_transactions : Types.Transaction.t list;
+    validator_pubkeys : Bls.PublicKey.t list;
     two_f_plus_one : int;
-    round_to_authors : int -> Types.RoundToAuthors.t;
-    round_to_certificates : int -> Types.Certificate.t list;
-  }
-
-  module Network : sig
-    val broadcast : from:Bls.PublicKey.t -> label:string -> bytes -> unit
-
-    val send :
-      from:Bls.PublicKey.t ->
-      public_key:Bls.PublicKey.t ->
-      label:string ->
-      bytes ->
-      unit
-  end
-
-  val new_mempool :
-    signing_key:Bls.SigningKey.t -> validators:Bls.PublicKey.t list -> t
-
-  val get_current_certificates : t -> int -> Types.Certificate.t list
-
-  val write : int -> int -> unit
-
-  val valid : digest:bytes -> certificate:Types.Certificate.t -> bool
-
-  val read : digest:bytes -> Types.Block.t
-
-  val get_pending_transactions : int -> Types.Transaction.t list
-
-  val validate_block : t -> Types.SignedBlock.t -> bool
-
-  val start_round : privkey:Bls.SigningKey.t -> t -> unit
-
-  val receive_block : t -> from:Bls.PublicKey.t -> bytes -> unit
-
-  val receive_data : t -> from:Bls.PublicKey.t -> label:string -> bytes -> unit
-end = struct
-  type t = {
-    signing_key : Bls.SigningKey.t;
-    public_key : Bls.PublicKey.t;
-    round : int;
-    round_to_blocks : int -> Types.Block.t list;
-    pending_transactions : Types.Transaction.t list;
-    validators : Bls.PublicKey.t list;
-    two_f_plus_one : int;
-    round_to_authors : int -> Types.RoundToAuthors.t;
-    round_to_certificates : int -> Types.Certificate.t list;
+    mutable round_to_authors : int -> Types.RoundToAuthors.t;
+    mutable round_to_certificates : int -> Types.Certificate.t list;
   }
 
   module Network = struct
@@ -68,14 +27,17 @@ end = struct
       ()
   end
 
-  let new_mempool ~signing_key ~validators : t =
+  let new_mempool signing_key validator_pubkeys ~send ~recv : t =
     {
+      mutex = Mutex.create ();
       signing_key;
       public_key = Bls.SigningKey.to_public signing_key;
+      send;
+      recv;
       round = 0;
       round_to_blocks = (fun _ -> []);
       pending_transactions = [];
-      validators;
+      validator_pubkeys;
       two_f_plus_one = 0;
       round_to_authors = (fun _ -> Types.RoundToAuthors.empty);
       round_to_certificates = (fun _ -> []);
@@ -119,13 +81,14 @@ end = struct
     then false
     else true
 
-  let start_round ~privkey t =
+  let start_round t =
     (* create a block *)
     let transactions = get_pending_transactions 10 in
     let round = t.round in
     let certificates = get_current_certificates t round in
     let sblock =
-      Types.SignedBlock.create ~privkey ~round ~certificates transactions
+      Types.SignedBlock.create ~privkey:t.signing_key ~round ~certificates
+        transactions
     in
     let serialized_sblock = Marshal.(to_bytes sblock [ No_sharing ]) in
 
@@ -155,13 +118,40 @@ end = struct
 
   let receive_data t ~(from : Bls.PublicKey.t) ~(label : string) (data : bytes)
       =
+    Format.printf "%s received a message" (Bls.PublicKey.to_hex t.public_key);
     match label with
     | "block" -> receive_block t ~from data
     | _ -> failwith "unimplemented"
+
+  let run_consensus t =
+    Format.printf "starting validator %s\n" (Bls.PublicKey.to_hex t.public_key);
+
+    (* propose block *)
+    start_round t;
+
+    (* wait for messages and process them *)
+    ()
 end
 
-and Validator : sig
+module Validator = struct
   type t = { mempool : Mempool.t }
-end = struct
-  type t = { mempool : Mempool.t }
+
+  let new_validator signing_key validator_pubkeys ~send ~recv =
+    { mempool = Mempool.new_mempool signing_key validator_pubkeys ~send ~recv }
+
+  let run t =
+    (* send a msg for testing *)
+    Format.printf "%s sending a test msg\n"
+      (Bls.PublicKey.to_hex t.mempool.public_key);
+    Event.sync
+      (Event.send t.mempool.send
+         Types.
+           {
+             from = t.mempool.public_key;
+             destination = t.mempool.public_key Option;
+             label = "test";
+             data = Bytes.of_string "hey";
+           });
+    (* run consensus *)
+    Mempool.run_consensus t.mempool
 end

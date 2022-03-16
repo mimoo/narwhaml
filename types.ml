@@ -27,28 +27,22 @@ module Transaction = struct
   let for_test _ : t = Random.int 10000
 end
 
-module rec Block : sig
-  type t = {
-    source : Bls.PublicKey.t;
-    round : int;
-    transactions : Transaction.t list;
-    certificates : Certificate.t list;
-  }
+type block = {
+  source : Bls.PublicKey.t;
+  round : int;
+  transactions : Transaction.t list;
+  certificates : certificate list;
+} 
+and signed_block = { block : block; signature : Bls.Signature.t }
+and certificate = { signed_block : signed_block; signatures : Bls.Signature.t list }
 
-  val to_bytes : t -> bytes
 
-  val digest : t -> bytes
-end = struct
-  type t = {
-    source : Bls.PublicKey.t;
-    round : int;
-    transactions : Transaction.t list;
-    certificates : Certificate.t list;
-  }
+module Block = struct
+  type t = block
 
   let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
 
-  let digest (t : Block.t) =
+  let digest (t : t) =
     let bytes = to_bytes t in
     let digest_str = Digestif.SHA3_256.(to_raw_string @@ digest_bytes bytes) in
     Bytes.of_string digest_str
@@ -68,21 +62,8 @@ end = struct
     assert (b3 <> b1)
 end
 
-and SignedBlock : sig
-  type t = { block : Block.t; signature : Bls.Signature.t }
-
-  val create :
-    privkey:Bls.SigningKey.t ->
-    round:int ->
-    certificates:Certificate.t list ->
-    Transaction.t list ->
-    t
-
-  val to_bytes : t -> bytes
-
-  val digest : t -> bytes
-end = struct
-  type t = { block : Block.t; signature : Bls.Signature.t }
+module SignedBlock = struct
+  type t = signed_block
 
   let create ~privkey ~round ~certificates transactions =
     let source = Bls.SigningKey.to_public privkey in
@@ -96,16 +77,10 @@ end = struct
   let digest { block; _ } = Block.digest block
 end
 
-and Certificate : sig
-  type t = { block : Block.t; signatures : Bls.Signature.t list }
+module Certificate = struct
+  type t = certificate
 
-  val create : Block.t -> t
-
-  val add_signature : t -> Bls.Signature.t -> t
-end = struct
-  type t = { block : Block.t; signatures : Bls.Signature.t list }
-
-  let create block : t = { block; signatures = [] }
+  let create signed_block : t = { signed_block; signatures = [] }
 
   let add_signature t signature =
     { t with signatures = signature :: t.signatures }
@@ -118,3 +93,14 @@ module PublicKeyToValidator = Map.Make (struct
 end)
 
 module RoundToAuthors = Set.Make (Bls.PublicKey)
+
+(* messages that can be sent and received *)
+
+type msg_type = Block | SignedBlock | Certificate
+
+type message = {
+  from : Bls.PublicKey.t; (** author of this message *)
+  destination : Bls.PublicKey.t option; (** None indicates a broadcast *)
+  label : msg_type; (** type of message *)
+  data : bytes; (** serialized message *)
+}
