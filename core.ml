@@ -1,11 +1,13 @@
+module DigestMap = Map.Make (Bytes)
+
 module Mempool = struct
   type round_state = {
     received_certificates : Types.CertificateSet.t;
     received_signatures : Bls.SignatureSet.t;
     round : int;
     phase : Types.phase;
-    already_proposed : Bls.PublicKeySet.t;
   }
+  (** gets re-ininitialized at every new round *)
 
   type t = {
     (* about *)
@@ -18,38 +20,43 @@ module Mempool = struct
     send : Types.message Event.channel;
     recv : Types.message Event.channel;
     (* storage *)
-    round_to_blocks : int -> Types.Block.t list;
+    mutable digest_to_block : Types.SignedBlock.t DigestMap.t;
     mutable pending_transactions : Types.Transaction.t list;
     (* round state *)
     mutable round_state : round_state;
   }
+  (** contains the state of the mempool *)
 
-  (* new *)
+  (* initialization functions *)
 
+  (** create a new fresh round state given a `round` *)
+  let new_round_state round =
+    {
+      received_certificates = Types.CertificateSet.empty;
+      received_signatures = Bls.SignatureSet.empty;
+      round;
+      phase = Types.ReadyForNewRound;
+    }
+
+  (** creates a new mempool state from a signing key, a list of validator public keys,
+        and two channels to communicate with the network simulator
+    *)
   let new_mempool signing_key validator_pubkeys ~send ~recv : t =
     let two_f_plus_one = (2 * ((List.length validator_pubkeys - 1) / 3)) + 1 in
-    let round_state =
-      {
-        received_certificates = Types.CertificateSet.empty;
-        received_signatures = Bls.SignatureSet.empty;
-        round = 0;
-        phase = Types.ReadyForNewRound;
-        already_proposed = Bls.PublicKeySet.empty;
-      }
-    in
+    let round_state = new_round_state 0 in
     {
       signing_key;
       public_key = Bls.SigningKey.to_public signing_key;
       send;
       recv;
-      round_to_blocks = (fun _ -> []);
+      digest_to_block = DigestMap.empty;
       pending_transactions = [];
       validator_pubkeys;
       two_f_plus_one;
       round_state;
     }
 
-  (*logging *)
+  (* logging *)
 
   let log t msg =
     let source = Bls.PublicKey.log t.public_key in
@@ -73,32 +80,24 @@ module Mempool = struct
 
   (* storage *)
 
-  let write digest block =
-    let _ = digest in
-    let _ = block in
-    ()
-
-  let valid ~digest ~certificate : bool =
-    let _ = digest in
-    let _ = certificate in
-    failwith "unimplemented"
-
-  let read ~digest : Types.Block.t =
-    let _ = digest in
-    failwith "unimplemented"
-
+  (** retrieve `num` transactions from the mempool *)
   let get_pending_transactions num =
     List.init num (fun _ -> Types.Transaction.for_test ())
 
-  (** store signature *)
+  let store_and_sign_block t digest block =
+    t.digest_to_block <- DigestMap.add digest block t.digest_to_block;
+    Bls.SigningKey.sign t.signing_key digest
+
+  (** store a received signature on our block *)
   let store_signature t signature : bool =
     let received_signatures =
       Bls.SignatureSet.add signature t.round_state.received_signatures
     in
     t.round_state <- { t.round_state with received_signatures };
     Bls.SignatureSet.cardinal t.round_state.received_signatures
-    = t.two_f_plus_one
+    >= t.two_f_plus_one
 
+  (** store a received certificate and potentially update to a new round *)
   let store_certificate t certificate =
     (* add the certificate to the state *)
     let received_certificates =
@@ -113,21 +112,27 @@ module Mempool = struct
     then t.round_state <- { t.round_state with phase = ReadyForNewRound }
 
   (* message processing *)
-  let validate_block (state : t) (sblock : Types.SignedBlock.t) : bool =
+  let validate_block t (sblock : Types.SignedBlock.t) : bool =
     let pubkey = sblock.block.source in
     let signature = sblock.signature in
     let digest = Types.SignedBlock.digest sblock in
     let block = sblock.block in
     (* valid signature *)
-    if not (Bls.PublicKey.verify pubkey digest signature) then false
-      (* from current round *)
-    else if not (block.round = state.round_state.round) then false
-      (* not enough certificates for non-genesis block *)
+    if not (Bls.PublicKey.verify pubkey digest signature) then (
+      print_endline "invalid sig";
+      false (* from current round *))
+    else if not (block.round = t.round_state.round) then (
+      Format.printf "block: %d, us: %d\n" block.round t.round_state.round;
+      print_endline "invalid round";
+      false (* not enough certificates for non-genesis block *))
     else if
-      block.round <> 0 && List.length block.certificates < state.two_f_plus_one
-    then false (* author has already proposed in this round *)
-    else if Bls.PublicKeySet.mem block.source state.round_state.already_proposed
-    then false
+      block.round <> 0 && List.length block.certificates < t.two_f_plus_one
+    then (
+      print_endline "not enough certs";
+      false (* author has already proposed in this round *))
+    else if DigestMap.mem digest t.digest_to_block then (
+      print_endline "author has already proposed";
+      false)
     else true
 
   (** receive a block *)
@@ -138,22 +143,18 @@ module Mempool = struct
     (* validate block *)
     if not (validate_block t signed_block) then failwith "invalid block"
     else
-      (* store it *)
+      (* store and sign the block *)
       let digest = Types.SignedBlock.digest signed_block in
-      write digest signed_block;
-
-      (* sign it *)
-      let signature = Bls.SigningKey.sign t.signing_key digest in
-      let signature = Bls.Signature.to_bytes signature in
+      let signature = store_and_sign_block t digest signed_block in
 
       (* send signature back *)
-      send t ~public_key ~label:"signature" signature
+      let serialized_signature = Bls.Signature.to_bytes signature in
+      send t ~public_key ~label:"signature" serialized_signature
 
   (** create a certificate from 2f+1 signatures *)
   let create_and_broadcast_cert t =
-    assert (
-      Types.CertificateSet.cardinal t.round_state.received_certificates
-      >= t.two_f_plus_one);
+    let signatures = t.round_state.received_signatures in
+    assert (Bls.SignatureSet.cardinal signatures >= t.two_f_plus_one);
 
     (* get block digest *)
     let block_digest =
@@ -163,9 +164,7 @@ module Mempool = struct
     in
 
     (* create certificate & serialized *)
-    let certificate =
-      Types.{ block_digest; signatures = t.round_state.received_signatures }
-    in
+    let certificate = Types.{ block_digest; signatures } in
     let serialized_certificate = Types.Certificate.to_bytes certificate in
 
     (* update the state *)
@@ -219,8 +218,8 @@ module Mempool = struct
     | ReadyForNewRound -> start_round t
     | WaitForCerts | Proposed _ -> listen_for_messages t
 
-  (** start a round with this function *)
-  and start_round t =
+  (** start a new round (relies on previous round state) *)
+  and start_round ?genesis t =
     assert (t.round_state.phase = ReadyForNewRound);
 
     (* create a block building on the 2f+1 certificates
@@ -236,10 +235,19 @@ module Mempool = struct
         transactions
     in
     let serialized_sblock = Marshal.(to_bytes sblock [ No_sharing ]) in
+    let block_digest = Types.SignedBlock.digest sblock in
 
-    (* update the state *)
-    let digest = Types.SignedBlock.digest sblock in
-    t.round_state <- { t.round_state with phase = Types.Proposed digest };
+    (* re-init the round state with new round (unless genesis) *)
+    let round_state =
+      match genesis with
+      | Some true -> t.round_state
+      | Some false | None ->
+          let new_round = t.round_state.round + 1 in
+          new_round_state new_round
+    in
+
+    (* init the round state for the new round *)
+    t.round_state <- { round_state with phase = Types.Proposed block_digest };
 
     (* send it to everyone *)
     broadcast t ~label:"signed_block" serialized_sblock;
@@ -250,7 +258,7 @@ module Mempool = struct
   (** the main function *)
   let run_consensus t =
     (* log t "starting"; *)
-    start_round t
+    start_round ~genesis:true t
 end
 
 (** A validator is just a mempool for now. *)
