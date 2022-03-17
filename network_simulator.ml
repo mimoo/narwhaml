@@ -1,18 +1,46 @@
 module PubkeyToChannel = Map.Make (Bls.PublicKey)
 
-let rec run_network (pubkey_to_channel, recv_channels) =
-  print_endline "running network";
+(** logging *)
+let log public_key msg =
+  let source = Bls.PublicKey.log public_key in
+  Format.printf "[0x%s] %s\n" source msg;
+  print_newline ()
 
+(* logic behind dispatching messages from validators to validators *)
+let dispatch_msg pubkey_to_channel (msg : Types.message) =
+  match msg.destination with
+  (* direct send *)
+  | Some public_key ->
+      log msg.from
+        (Format.sprintf "sent a message to %s" (Bls.PublicKey.log public_key));
+      let send = PubkeyToChannel.find public_key pubkey_to_channel in
+      Event.sync (Event.send send msg)
+  (* broadcast *)
+  | None ->
+      log msg.from (Format.sprintf "broadcasted a message");
+      let f public_key send =
+        if not (public_key = msg.from) then Event.sync (Event.send send msg)
+      in
+      PubkeyToChannel.iter f pubkey_to_channel
+
+(** runs the network loop *)
+let rec run_network (pubkey_to_channel, recv_channels) =
+  print_endline "listening...";
   (* listen from all validators *)
   let events = List.map Event.receive recv_channels in
-  Format.printf "done receiving, now syncing\n";
 
   (* forward to validator *)
-  let Types.{ from; label; _ } = Event.select events in
-  Format.printf "received %s from %s\n" label (Bls.PublicKey.to_hex from);
+  let msg : Types.message = Event.select events in
+  print_endline "going to dispatch";
+  dispatch_msg pubkey_to_channel msg;
+  print_endline "dispatched";
 
+  (* 5 seconds per msg, to be able to follow flow *)
+  Unix.sleep 10;
+  print_endline "ended sleeping";
   run_network (pubkey_to_channel, recv_channels)
 
+(** sets up the simulated network given a number of validators *)
 let new_simulation num_validators =
   Format.printf "starting simulation with %d validators\n" num_validators;
 
@@ -47,9 +75,9 @@ let new_simulation num_validators =
   (* create a new thread for every validator, returns the handle *)
   let create_validator_thread signing_key (send, recv) =
     (* a send (resp. recv) channel becomes a recv (resp. send) channel for a validator *)
-    let send, recv = (recv, send) in
     let validator =
-      Core.Validator.new_validator signing_key validators_pubkeys ~send ~recv
+      Core.Validator.new_validator signing_key validators_pubkeys ~send:recv
+        ~recv:send
     in
     let handle = Thread.create Core.Validator.run validator in
     handle
@@ -58,4 +86,5 @@ let new_simulation num_validators =
   let _handles = List.map2 create_validator_thread !signing_keys channels in
 
   (* run the validators *)
+  print_endline "starting the network";
   run_network (!pubkey_to_channel, !recv_channels)

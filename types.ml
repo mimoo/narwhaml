@@ -1,31 +1,17 @@
-(** This is an educational implementation of the Narwhall protocol. *)
-
-module Oracle (SomeModule : Hashtbl.HashedType) = struct
-  let counter = ref 0
-
-  module Hashtbl = Hashtbl.Make (SomeModule)
-
-  let memory : int Hashtbl.t = Hashtbl.create 5
-
-  let to_bytes (t : SomeModule.t) : string =
-    Format.printf "using %d\n" (SomeModule.hash t);
-    match Hashtbl.find_opt memory t with
-    | Some d -> string_of_int d
-    | None ->
-        incr counter;
-        Hashtbl.add memory t !counter;
-        string_of_int !counter
-end
-
-module ReliableBroadcast = struct
-  let broadcast _msg = failwith "unimplemented"
-end
-
+(** A transaction*)
 module Transaction = struct
   type t = int
+  (* type t = {
+       author: Bls.PublicKey.t;
+       destination: Bls.PublicKey.t;
+       nonce: int;
+       amount: int;
+     }*)
 
   let for_test _ : t = Random.int 10000
 end
+
+(* recursive types *)
 
 type block = {
   source : Bls.PublicKey.t;
@@ -41,6 +27,7 @@ and certificate = {
   signatures : Bls.Signature.t list;
 }
 
+(** Block logic *)
 module Block = struct
   type t = block
 
@@ -66,12 +53,13 @@ module Block = struct
     assert (b3 <> b1)
 end
 
+(** Signed block logic *)
 module SignedBlock = struct
   type t = signed_block
 
   let create ~privkey ~round ~certificates transactions =
     let source = Bls.SigningKey.to_public privkey in
-    let block = Block.{ source; round; transactions; certificates } in
+    let block = { source; round; transactions; certificates } in
     let digest = Block.digest block in
     let signature = Bls.SigningKey.sign privkey digest in
     { block; signature }
@@ -81,8 +69,11 @@ module SignedBlock = struct
   let digest { block; _ } = Block.digest block
 end
 
+(** Certificate logic *)
 module Certificate = struct
   type t = certificate
+
+  let compare = Stdlib.compare
 
   let create signed_block : t = { signed_block; signatures = [] }
 
@@ -90,21 +81,28 @@ module Certificate = struct
     { t with signatures = signature :: t.signatures }
 end
 
-module PublicKeyToValidator = Map.Make (struct
-  type t = Bls.PublicKey.t
+(* *)
 
-  let compare = Bls.PublicKey.compare
-end)
+type phase = Proposed of bytes | ReadyForNewRound
 
-module RoundToAuthors = Set.Make (Bls.PublicKey)
+(* types *)
 
-(* messages that can be sent and received *)
+module FromPublicKey = Map.Make (Bls.PublicKey)
+(** Hashmap of public key to something *)
 
-type msg_type = Block | SignedBlock | Certificate
+module PublicKeySet = Set.Make (Bls.PublicKey)
+(** set of public keys *)
+
+module SignatureSet = Set.Make (Bls.Signature)
+(** set of signatures *)
+
+module CertificateSet = Set.Make (Certificate)
+(** set of certificates *)
 
 type message = {
   from : Bls.PublicKey.t;  (** author of this message *)
   destination : Bls.PublicKey.t option;  (** None indicates a broadcast *)
-  label : msg_type;  (** type of message *)
+  label : string;  (** type of message *)
   data : bytes;  (** serialized message *)
 }
+(** A message that can used to send to a validator, or broadcast to all validators *)

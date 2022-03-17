@@ -3,7 +3,11 @@
 module Signature = struct
   type t = Bls12_381.Signature.MinSig.signature
 
+  let compare = Stdlib.compare
+
   let to_bytes : t -> bytes = Bls12_381.Signature.MinSig.signature_to_bytes
+
+  let of_bytes : bytes -> t = Bls12_381.Signature.MinSig.signature_of_bytes_exn
 
   let to_hex signature : string = Hexstring.encode @@ to_bytes signature
 end
@@ -11,14 +15,18 @@ end
 module PublicKey = struct
   type t = Bls12_381.Signature.MinSig.pk
 
+  let compare = Stdlib.compare
+
   let to_bytes : t -> bytes = Bls12_381.Signature.MinSig.pk_to_bytes
 
   let to_hex pk : string = Hexstring.encode @@ to_bytes pk
 
+  let log pk : string =
+    let hex = to_hex pk in
+    String.sub hex 0 4
+
   let verify pk msg signature : bool =
     Bls12_381.Signature.MinSig.Basic.verify pk msg signature
-
-  let compare = Stdlib.compare
 end
 
 module SigningKey = struct
