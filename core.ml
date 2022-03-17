@@ -181,8 +181,7 @@ module Mempool = struct
 
   (** the main function *)
   let run_consensus t =
-    log t "starting";
-
+    (* log t "starting"; *)
     start_round t
 end
 

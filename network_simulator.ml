@@ -6,39 +6,70 @@ let log public_key msg =
   Format.printf "[0x%s] %s\n" source msg;
   print_newline ()
 
-(* logic behind dispatching messages from validators to validators *)
-let dispatch_msg pubkey_to_channel (msg : Types.message) =
-  match msg.destination with
-  (* direct send *)
-  | Some public_key ->
-      log msg.from
-        (Format.sprintf "sent a message to %s" (Bls.PublicKey.log public_key));
-      let send = PubkeyToChannel.find public_key pubkey_to_channel in
-      Event.sync (Event.send send msg)
-  (* broadcast *)
-  | None ->
-      log msg.from (Format.sprintf "broadcasted a message");
-      let f public_key send =
-        if not (public_key = msg.from) then Event.sync (Event.send send msg)
-      in
-      PubkeyToChannel.iter f pubkey_to_channel
+module Network = struct
+  type state = {
+    pubkey_to_channel : Types.message Event.channel PubkeyToChannel.t;
+    mutable sending_queue : Types.message Queue.t;
+    recv_channels : Types.message Event.channel list;
+  }
 
-(** runs the network loop *)
-let rec run_network (pubkey_to_channel, recv_channels) =
-  print_endline "listening...";
-  (* listen from all validators *)
-  let events = List.map Event.receive recv_channels in
+  let gen pubkey_to_channel recv_channels =
+    { pubkey_to_channel; sending_queue = Queue.create (); recv_channels }
 
-  (* forward to validator *)
-  let msg : Types.message = Event.select events in
-  print_endline "going to dispatch";
-  dispatch_msg pubkey_to_channel msg;
-  print_endline "dispatched";
+  (* logic behind dispatching messages from validators to validators *)
+  let dispatch_msg state (msg : Types.message) =
+    let send_or_queue state send (msg : Types.message) =
+      match Event.poll (Event.send send msg) with
+      | None ->
+          let info =
+            Format.sprintf "couldn't receive message from %s. Queueing"
+              (Bls.PublicKey.log msg.from)
+          in
+          log (Option.get msg.destination) info;
+          Queue.push msg state.sending_queue
+      | Some () -> log (Option.get msg.destination) "received"
+    in
+    match msg.destination with
+    (* direct send *)
+    | Some public_key ->
+        log msg.from
+          (Format.sprintf "sent a message to %s" (Bls.PublicKey.log public_key));
+        let send = PubkeyToChannel.find public_key state.pubkey_to_channel in
+        send_or_queue state send msg
+    (* broadcast *)
+    | None ->
+        log msg.from (Format.sprintf "broadcasted a message");
+        let f public_key send =
+          let msg = { msg with destination = Some public_key } in
+          if not (public_key = msg.from) then send_or_queue state send msg
+        in
+        PubkeyToChannel.iter f state.pubkey_to_channel
 
-  (* 5 seconds per msg, to be able to follow flow *)
-  Unix.sleep 10;
-  print_endline "ended sleeping";
-  run_network (pubkey_to_channel, recv_channels)
+  (** runs the network loop *)
+  let rec run_network state =
+    print_endline "listening...";
+    (* check queue first *)
+    (match Queue.take_opt state.sending_queue with
+    | None -> print_endline "nothing in the queue"
+    | Some msg ->
+        Format.printf "found %d messages in the queue\n"
+          (Queue.length state.sending_queue);
+        dispatch_msg state msg);
+
+    (* then check recv_channels *)
+
+    (* listen from all validators *)
+    let events = List.map Event.receive state.recv_channels in
+
+    (* forward to validator *)
+    let msg : Types.message = Event.select events in
+    dispatch_msg state msg;
+
+    (* 5 seconds per msg, to be able to follow flow *)
+    Unix.sleep 10;
+    print_endline "ended sleeping";
+    run_network state
+end
 
 (** sets up the simulated network given a number of validators *)
 let new_simulation num_validators =
@@ -87,4 +118,5 @@ let new_simulation num_validators =
 
   (* run the validators *)
   print_endline "starting the network";
-  run_network (!pubkey_to_channel, !recv_channels)
+  let state = Network.gen !pubkey_to_channel !recv_channels in
+  Network.run_network state
