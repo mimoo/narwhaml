@@ -103,6 +103,7 @@ let new_simulation num_validators =
   List.iter2 add_to_hashmap validators_pubkeys !send_channels;
 
   (* create a new thread for every validator, returns the handle *)
+  let validators_pubkeys = Bls.PublicKeySet.of_list validators_pubkeys in
   let create_validator_thread signing_key (send, recv) =
     (* a send (resp. recv) channel becomes a recv (resp. send) channel for a validator *)
     let validator =

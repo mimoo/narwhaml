@@ -20,13 +20,18 @@ type block = {
   certificates : certificate list;
 }
 
-and certificate = { block_digest : bytes; signatures : Bls.SignatureSet.t }
+and certificate = {
+  block_digest : bytes;
+  signatures : Bls.Signature.t Bls.OfPublicKey.t;
+}
 
 (** Block logic *)
 module Block = struct
   type t = block
 
   let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
+
+  let of_bytes bytes : t = Marshal.from_bytes bytes 0
 
   let digest (t : t) =
     let bytes = to_bytes t in
@@ -61,6 +66,8 @@ module SignedBlock = struct
 
   let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
 
+  let of_bytes bytes : t = Marshal.from_bytes bytes 0
+
   let digest { block; _ } = Block.digest block
 end
 
@@ -72,13 +79,11 @@ module Certificate = struct
 
   let create block : t =
     let block_digest = Block.digest block in
-    { block_digest; signatures = Bls.SignatureSet.empty }
-
-  let add_signature t signature =
-    let signatures = Bls.SignatureSet.add signature t.signatures in
-    { t with signatures }
+    { block_digest; signatures = Bls.OfPublicKey.empty }
 
   let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
+
+  let of_bytes bytes : t = Marshal.from_bytes bytes 0
 end
 
 (* *)

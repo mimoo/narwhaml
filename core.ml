@@ -3,7 +3,7 @@ module DigestMap = Map.Make (Bytes)
 module Mempool = struct
   type round_state = {
     received_certificates : Types.CertificateSet.t;
-    received_signatures : Bls.SignatureSet.t;
+    received_signatures : Bls.Signature.t Bls.OfPublicKey.t;
     round : int;
     phase : Types.phase;
   }
@@ -14,7 +14,7 @@ module Mempool = struct
     signing_key : Bls.SigningKey.t;
     public_key : Bls.PublicKey.t;
     (* constants *)
-    validator_pubkeys : Bls.PublicKey.t list;
+    validators_pubkeys : Bls.PublicKeySet.t;
     two_f_plus_one : int;
     (* communication *)
     send : Types.message Event.channel;
@@ -33,7 +33,7 @@ module Mempool = struct
   let new_round_state round =
     {
       received_certificates = Types.CertificateSet.empty;
-      received_signatures = Bls.SignatureSet.empty;
+      received_signatures = Bls.OfPublicKey.empty;
       round;
       phase = Types.ReadyForNewRound;
     }
@@ -41,8 +41,9 @@ module Mempool = struct
   (** creates a new mempool state from a signing key, a list of validator public keys,
         and two channels to communicate with the network simulator
     *)
-  let new_mempool signing_key validator_pubkeys ~send ~recv : t =
-    let two_f_plus_one = (2 * ((List.length validator_pubkeys - 1) / 3)) + 1 in
+  let new_mempool signing_key validators_pubkeys ~send ~recv : t =
+    let num_validators = Bls.PublicKeySet.cardinal validators_pubkeys in
+    let two_f_plus_one = (2 * ((num_validators - 1) / 3)) + 1 in
     let round_state = new_round_state 0 in
     {
       signing_key;
@@ -51,7 +52,7 @@ module Mempool = struct
       recv;
       digest_to_block = DigestMap.empty;
       pending_transactions = [];
-      validator_pubkeys;
+      validators_pubkeys;
       two_f_plus_one;
       round_state;
     }
@@ -89,12 +90,12 @@ module Mempool = struct
     Bls.SigningKey.sign t.signing_key digest
 
   (** store a received signature on our block *)
-  let store_signature t signature : bool =
+  let store_signature t public_key signature : bool =
     let received_signatures =
-      Bls.SignatureSet.add signature t.round_state.received_signatures
+      Bls.OfPublicKey.add public_key signature t.round_state.received_signatures
     in
     t.round_state <- { t.round_state with received_signatures };
-    Bls.SignatureSet.cardinal t.round_state.received_signatures
+    Bls.OfPublicKey.cardinal t.round_state.received_signatures
     >= t.two_f_plus_one
 
   (** store a received certificate and potentially update to a new round *)
@@ -138,7 +139,7 @@ module Mempool = struct
   (** receive a block *)
   let process_block t ~from:public_key bytes =
     (* deserialize block *)
-    let signed_block : Types.SignedBlock.t = Marshal.from_bytes bytes 0 in
+    let signed_block = Types.SignedBlock.of_bytes bytes in
 
     (* validate block *)
     if not (validate_block t signed_block) then failwith "invalid block"
@@ -154,7 +155,7 @@ module Mempool = struct
   (** create a certificate from 2f+1 signatures *)
   let create_and_broadcast_cert t =
     let signatures = t.round_state.received_signatures in
-    assert (Bls.SignatureSet.cardinal signatures >= t.two_f_plus_one);
+    assert (Bls.OfPublicKey.cardinal signatures >= t.two_f_plus_one);
 
     (* get block digest *)
     let block_digest =
@@ -177,7 +178,7 @@ module Mempool = struct
     broadcast t ~label:"certificate" serialized_certificate
 
   (** receive a signature *)
-  let process_signature t ~from bytes =
+  let process_signature t ~from:public_key bytes =
     (* get the current proposed block digest *)
     match t.round_state.phase with
     | WaitForCerts -> ()
@@ -188,17 +189,38 @@ module Mempool = struct
 
         (* validate and store it *)
         if
-          Bls.PublicKey.verify from digest signature
-          && store_signature t signature
+          Bls.PublicKey.verify public_key digest signature
+          && store_signature t public_key signature
         then
           (* create a certificate if we have enough signatures *)
           create_and_broadcast_cert t
+
+  let process_certificate t bytes =
+    (* deserialize it *)
+    let certificate = Types.Certificate.of_bytes bytes in
+
+    (* make sure there's 2f+1 signatures inside of it *)
+    if Bls.OfPublicKey.cardinal certificate.signatures < t.two_f_plus_one then
+      ()
+    else
+      (* verify the signature *)
+      let verify_signature public_key signature =
+        (* check if the public key is part of the validator set *)
+        Bls.PublicKeySet.mem public_key t.validators_pubkeys
+        && (* check if the signature is correct *)
+        Bls.PublicKey.verify public_key certificate.block_digest signature
+      in
+      if Bls.OfPublicKey.for_all verify_signature certificate.signatures then
+        (* TODO: ask for the block if we don't have it *)
+
+        (* store and check if we can advance to new round *)
+        store_certificate t certificate
 
   let process_msg t Types.{ from; label; data; _ } =
     match label with
     | "signed_block" -> process_block t ~from data
     | "signature" -> process_signature t ~from data
-    | "certificate" -> failwith "unimplemented"
+    | "certificate" -> process_certificate t data
     | _ -> failwith "unimplemented"
 
   (* main loops *)
@@ -265,8 +287,8 @@ end
 module Validator = struct
   type t = { mempool : Mempool.t }
 
-  let new_validator signing_key validator_pubkeys ~send ~recv =
-    { mempool = Mempool.new_mempool signing_key validator_pubkeys ~send ~recv }
+  let new_validator signing_key validators_pubkeys ~send ~recv =
+    { mempool = Mempool.new_mempool signing_key validators_pubkeys ~send ~recv }
 
   let run t =
     (* run consensus *)
