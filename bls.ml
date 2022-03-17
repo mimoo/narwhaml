@@ -61,3 +61,9 @@ let%test "sign & verify" =
   let verified = PublicKey.verify pubkey msg signature in
   Format.printf "verified: %B\n" verified;
   verified
+
+module PublicKeySet = Set.Make (PublicKey)
+(** set of public keys *)
+
+module SignatureSet = Set.Make (Signature)
+(** set of signatures *)

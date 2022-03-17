@@ -1,4 +1,12 @@
 module Mempool = struct
+  type round_state = {
+    received_certificates : Types.CertificateSet.t;
+    received_signatures : Bls.SignatureSet.t;
+    round : int;
+    phase : Types.phase;
+    already_proposed : Bls.PublicKeySet.t;
+  }
+
   type t = {
     (* about *)
     signing_key : Bls.SigningKey.t;
@@ -13,31 +21,32 @@ module Mempool = struct
     round_to_blocks : int -> Types.Block.t list;
     mutable pending_transactions : Types.Transaction.t list;
     (* round state *)
-    received_certificates : Types.CertificateSet.t;
-    received_signatures : Types.SignatureSet.t;
-    round : int;
-    mutable phase : Types.phase;
-    already_proposed : Types.PublicKeySet.t;
+    mutable round_state : round_state;
   }
 
   (* new *)
 
   let new_mempool signing_key validator_pubkeys ~send ~recv : t =
-    let two_f_plus_one = List.length validator_pubkeys in
+    let two_f_plus_one = (2 * ((List.length validator_pubkeys - 1) / 3)) + 1 in
+    let round_state =
+      {
+        received_certificates = Types.CertificateSet.empty;
+        received_signatures = Bls.SignatureSet.empty;
+        round = 0;
+        phase = Types.ReadyForNewRound;
+        already_proposed = Bls.PublicKeySet.empty;
+      }
+    in
     {
-      phase = Types.ReadyForNewRound;
       signing_key;
       public_key = Bls.SigningKey.to_public signing_key;
       send;
       recv;
-      round = 0;
       round_to_blocks = (fun _ -> []);
       pending_transactions = [];
-      received_certificates = Types.CertificateSet.empty;
       validator_pubkeys;
       two_f_plus_one;
-      already_proposed = Types.PublicKeySet.empty;
-      received_signatures = Types.SignatureSet.empty;
+      round_state;
     }
 
   (*logging *)
@@ -81,8 +90,29 @@ module Mempool = struct
   let get_pending_transactions num =
     List.init num (fun _ -> Types.Transaction.for_test ())
 
-  (* message processing *)
+  (** store signature *)
+  let store_signature t signature : bool =
+    let received_signatures =
+      Bls.SignatureSet.add signature t.round_state.received_signatures
+    in
+    t.round_state <- { t.round_state with received_signatures };
+    Bls.SignatureSet.cardinal t.round_state.received_signatures
+    = t.two_f_plus_one
 
+  let store_certificate t certificate =
+    (* add the certificate to the state *)
+    let received_certificates =
+      Types.CertificateSet.add certificate t.round_state.received_certificates
+    in
+    t.round_state <- { t.round_state with received_certificates };
+
+    (* check if we have enough certificate to go to the next round *)
+    if
+      Types.CertificateSet.cardinal t.round_state.received_certificates
+      = t.two_f_plus_one
+    then t.round_state <- { t.round_state with phase = ReadyForNewRound }
+
+  (* message processing *)
   let validate_block (state : t) (sblock : Types.SignedBlock.t) : bool =
     let pubkey = sblock.block.source in
     let signature = sblock.signature in
@@ -91,13 +121,13 @@ module Mempool = struct
     (* valid signature *)
     if not (Bls.PublicKey.verify pubkey digest signature) then false
       (* from current round *)
-    else if not (block.round = state.round) then false
+    else if not (block.round = state.round_state.round) then false
       (* not enough certificates for non-genesis block *)
     else if
       block.round <> 0 && List.length block.certificates < state.two_f_plus_one
     then false (* author has already proposed in this round *)
-    else if Types.PublicKeySet.mem block.source state.already_proposed then
-      false
+    else if Bls.PublicKeySet.mem block.source state.round_state.already_proposed
+    then false
     else true
 
   (** receive a block *)
@@ -119,50 +149,88 @@ module Mempool = struct
       (* send signature back *)
       send t ~public_key ~label:"signature" signature
 
-  (** store signature *)
-  let store_signature _t _signature = ()
+  (** create a certificate from 2f+1 signatures *)
+  let create_and_broadcast_cert t =
+    assert (
+      Types.CertificateSet.cardinal t.round_state.received_certificates
+      >= t.two_f_plus_one);
+
+    (* get block digest *)
+    let block_digest =
+      match t.round_state.phase with
+      | Proposed block_digest -> block_digest
+      | WaitForCerts | ReadyForNewRound -> failwith "forbidden state transition"
+    in
+
+    (* create certificate & serialized *)
+    let certificate =
+      Types.{ block_digest; signatures = t.round_state.received_signatures }
+    in
+    let serialized_certificate = Types.Certificate.to_bytes certificate in
+
+    (* update the state *)
+    t.round_state <- { t.round_state with phase = WaitForCerts };
+
+    (* store the certificate (and potentially move to new round) *)
+    store_certificate t certificate;
+
+    (* broadcast the certificate *)
+    broadcast t ~label:"certificate" serialized_certificate
 
   (** receive a signature *)
   let process_signature t ~from bytes =
-    (* deserialize signature *)
-    let signature = Bls.Signature.of_bytes bytes in
-
     (* get the current proposed block digest *)
-    let digest =
-      match t.phase with
-      | Proposed digest -> digest
-      | ReadyForNewRound ->
-          failwith "did not expected this in this serial logic"
-    in
+    match t.round_state.phase with
+    | WaitForCerts -> ()
+    | ReadyForNewRound -> failwith "forbidden state transition"
+    | Proposed digest ->
+        (* deserialize signature *)
+        let signature = Bls.Signature.of_bytes bytes in
 
-    (* validate it *)
-    if Bls.PublicKey.verify from digest signature then
-      store_signature t signature
-    else ()
+        (* validate and store it *)
+        if
+          Bls.PublicKey.verify from digest signature
+          && store_signature t signature
+        then
+          (* create a certificate if we have enough signatures *)
+          create_and_broadcast_cert t
 
   let process_msg t Types.{ from; label; data; _ } =
     match label with
     | "signed_block" -> process_block t ~from data
     | "signature" -> process_signature t ~from data
+    | "certificate" -> failwith "unimplemented"
     | _ -> failwith "unimplemented"
 
   (* main loops *)
 
   (** after starting a round, this is the loop *)
-  let rec in_round t =
+  let rec listen_for_messages t =
+    (match t.round_state.phase with
+    | ReadyForNewRound -> failwith "did not expected that"
+    | WaitForCerts | Proposed _ -> ());
+
+    (* receive & process the next message *)
     let msg = recv t in
     process_msg t msg;
 
-    match t.phase with
-    | ReadyForNewRound -> failwith "oops"
-    | Proposed _ -> in_round t
+    (* check if it's time to go to the next round *)
+    match t.round_state.phase with
+    | ReadyForNewRound -> start_round t
+    | WaitForCerts | Proposed _ -> listen_for_messages t
 
   (** start a round with this function *)
-  let start_round t =
-    (* create a block *)
+  and start_round t =
+    assert (t.round_state.phase = ReadyForNewRound);
+
+    (* create a block building on the 2f+1 certificates
+       although for genesis, there will be no certificate list
+    *)
     let transactions = get_pending_transactions 10 in
-    let round = t.round in
-    let certificates = Types.CertificateSet.elements t.received_certificates in
+    let round = t.round_state.round in
+    let certificates =
+      Types.CertificateSet.elements t.round_state.received_certificates
+    in
     let sblock =
       Types.SignedBlock.create ~privkey:t.signing_key ~round ~certificates
         transactions
@@ -171,13 +239,13 @@ module Mempool = struct
 
     (* update the state *)
     let digest = Types.SignedBlock.digest sblock in
-    t.phase <- Types.Proposed digest;
+    t.round_state <- { t.round_state with phase = Types.Proposed digest };
 
     (* send it to everyone *)
-    broadcast t ~label:"block" serialized_sblock;
+    broadcast t ~label:"signed_block" serialized_sblock;
 
     (* wait to receive a certificate *)
-    in_round t
+    listen_for_messages t
 
   (** the main function *)
   let run_consensus t =

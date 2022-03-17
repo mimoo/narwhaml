@@ -1,9 +1,14 @@
 module PubkeyToChannel = Map.Make (Bls.PublicKey)
 
 (** logging *)
-let log public_key msg =
-  let source = Bls.PublicKey.log public_key in
-  Format.printf "[0x%s] %s\n" source msg;
+let log Types.{ from; destination; label; _ } action =
+  let from = Bls.PublicKey.log from in
+  let destination =
+    match destination with
+    | None -> "everyone"
+    | Some destination -> Bls.PublicKey.log destination
+  in
+  Format.printf "[0x%s] %s '%s' to %s" from action label destination;
   print_newline ()
 
 module Network = struct
@@ -21,24 +26,19 @@ module Network = struct
     let send_or_queue state send (msg : Types.message) =
       match Event.poll (Event.send send msg) with
       | None ->
-          let info =
-            Format.sprintf "couldn't receive message from %s. Queueing"
-              (Bls.PublicKey.log msg.from)
-          in
-          log (Option.get msg.destination) info;
+          log msg "couldn't send";
           Queue.push msg state.sending_queue
-      | Some () -> log (Option.get msg.destination) "received"
+      | Some () -> log msg "successfuly sent"
     in
     match msg.destination with
     (* direct send *)
     | Some public_key ->
-        log msg.from
-          (Format.sprintf "sent a message to %s" (Bls.PublicKey.log public_key));
+        log msg "sent";
         let send = PubkeyToChannel.find public_key state.pubkey_to_channel in
         send_or_queue state send msg
     (* broadcast *)
     | None ->
-        log msg.from (Format.sprintf "broadcasted a message");
+        log msg "broadcasted";
         let f public_key send =
           let msg = { msg with destination = Some public_key } in
           if not (public_key = msg.from) then send_or_queue state send msg
@@ -65,9 +65,8 @@ module Network = struct
     let msg : Types.message = Event.select events in
     dispatch_msg state msg;
 
-    (* 5 seconds per msg, to be able to follow flow *)
-    Unix.sleep 10;
-    print_endline "ended sleeping";
+    (* sleep to be able to follow the flow *)
+    Unix.sleep 1;
     run_network state
 end
 

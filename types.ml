@@ -20,12 +20,7 @@ type block = {
   certificates : certificate list;
 }
 
-and signed_block = { block : block; signature : Bls.Signature.t }
-
-and certificate = {
-  signed_block : signed_block;
-  signatures : Bls.Signature.t list;
-}
+and certificate = { block_digest : bytes; signatures : Bls.SignatureSet.t }
 
 (** Block logic *)
 module Block = struct
@@ -55,7 +50,7 @@ end
 
 (** Signed block logic *)
 module SignedBlock = struct
-  type t = signed_block
+  type t = { block : block; signature : Bls.Signature.t }
 
   let create ~privkey ~round ~certificates transactions =
     let source = Bls.SigningKey.to_public privkey in
@@ -75,26 +70,22 @@ module Certificate = struct
 
   let compare = Stdlib.compare
 
-  let create signed_block : t = { signed_block; signatures = [] }
+  let create block : t =
+    let block_digest = Block.digest block in
+    { block_digest; signatures = Bls.SignatureSet.empty }
 
   let add_signature t signature =
-    { t with signatures = signature :: t.signatures }
+    let signatures = Bls.SignatureSet.add signature t.signatures in
+    { t with signatures }
+
+  let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
 end
 
 (* *)
 
-type phase = Proposed of bytes | ReadyForNewRound
+type phase = Proposed of bytes | WaitForCerts | ReadyForNewRound
 
 (* types *)
-
-module FromPublicKey = Map.Make (Bls.PublicKey)
-(** Hashmap of public key to something *)
-
-module PublicKeySet = Set.Make (Bls.PublicKey)
-(** set of public keys *)
-
-module SignatureSet = Set.Make (Bls.Signature)
-(** set of signatures *)
 
 module CertificateSet = Set.Make (Certificate)
 (** set of certificates *)
