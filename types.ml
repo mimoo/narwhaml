@@ -22,7 +22,7 @@ type block = {
 
 and certificate = {
   block_digest : bytes;
-  signatures : Bls.Signature.t Bls.OfPublicKey.t;
+  signatures : Bls.Signature.t Bls.PublicKeyMap.t;
 }
 
 (** Block logic *)
@@ -79,7 +79,7 @@ module Certificate = struct
 
   let create block : t =
     let block_digest = Block.digest block in
-    { block_digest; signatures = Bls.OfPublicKey.empty }
+    { block_digest; signatures = Bls.PublicKeyMap.empty }
 
   let to_bytes t = Marshal.(to_bytes t [ No_sharing ])
 

@@ -62,7 +62,7 @@ let%test "sign & verify" =
   Format.printf "verified: %B\n" verified;
   verified
 
-module OfPublicKey = Map.Make (PublicKey)
+module PublicKeyMap = Map.Make (PublicKey)
 
 module PublicKeySet = Set.Make (PublicKey)
 (** set of public keys *)
