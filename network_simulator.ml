@@ -1,15 +1,20 @@
 module PubkeyToChannel = Map.Make (Bls.PublicKey)
 
+let debug = false
+
 (** logging *)
 let log Types.{ from; destination; label; _ } action =
-  let from = Bls.PublicKey.log from in
-  let destination =
-    match destination with
-    | None -> "everyone"
-    | Some destination -> Bls.PublicKey.log destination
-  in
-  Format.printf "[0x%s] %s '%s' to %s" from action label destination;
-  print_newline ()
+  if debug then
+    let from = Bls.PublicKey.log from in
+    let destination =
+      match destination with
+      | None -> "everyone"
+      | Some destination -> Bls.PublicKey.log destination
+    in
+    let s =
+      Format.sprintf "[0x%s] %s '%s' to %s" from action label destination
+    in
+    Log.log s
 
 module Network = struct
   type state = {
@@ -47,13 +52,13 @@ module Network = struct
 
   (** runs the network loop *)
   let rec run_network state =
-    print_endline "listening...";
     (* check queue first *)
     (match Queue.take_opt state.sending_queue with
     | None -> print_endline "nothing in the queue"
     | Some msg ->
-        Format.printf "found %d messages in the queue\n"
-          (Queue.length state.sending_queue);
+        if debug then
+          Format.printf "found %d messages in the queue\n"
+            (Queue.length state.sending_queue);
         dispatch_msg state msg);
 
     (* then check recv_channels *)

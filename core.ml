@@ -61,7 +61,8 @@ module Mempool = struct
 
   let log t msg =
     let source = Bls.PublicKey.log t.public_key in
-    Format.printf "[0x%s] %s\n" source msg;
+    let s = Format.sprintf "[0x%s] %s" source msg in
+    Log.log s;
     print_newline ()
 
   (* communication *)
@@ -91,6 +92,7 @@ module Mempool = struct
 
   (** store a received signature on our block *)
   let store_signature t public_key signature : bool =
+    log t "storing a received signature";
     let received_signatures =
       Bls.PublicKeyMap.add public_key signature
         t.round_state.received_signatures
@@ -101,6 +103,7 @@ module Mempool = struct
 
   (** store a received certificate and potentially update to a new round *)
   let store_certificate t certificate =
+    log t "storing a certificate";
     (* add the certificate to the state *)
     let received_certificates =
       Types.CertificateSet.add certificate t.round_state.received_certificates
@@ -150,11 +153,13 @@ module Mempool = struct
       let signature = store_and_sign_block t digest signed_block in
 
       (* send signature back *)
+      log t "sending signature to block proposer";
       let serialized_signature = Bls.Signature.to_bytes signature in
       send t ~public_key ~label:"signature" serialized_signature
 
   (** create a certificate from 2f+1 signatures *)
   let create_and_broadcast_cert t =
+    log t "creating certificate";
     let signatures = t.round_state.received_signatures in
     assert (Bls.PublicKeyMap.cardinal signatures >= t.two_f_plus_one);
 
@@ -263,9 +268,12 @@ module Mempool = struct
     (* re-init the round state with new round (unless genesis) *)
     let round_state =
       match genesis with
-      | Some true -> t.round_state
+      | Some true ->
+          log t "starting genesis round";
+          t.round_state
       | Some false | None ->
           let new_round = t.round_state.round + 1 in
+          log t (Format.sprintf "starting a new round %d" new_round);
           new_round_state new_round
     in
 
